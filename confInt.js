@@ -17,7 +17,7 @@ document.getElementById('checkConfidence').addEventListener('click', async () =>
         // Execute a content script on the current tab to extract relevant data
         const injectionResults = await chrome.scripting.executeScript({
             target: { tabId: tab.id },
-            function: extractGoogleMapsReviewData,
+            function: extractGoogleMapsReviewData, // This function needs to correctly extract data
         });
 
         const extractedData = injectionResults[0].result;
@@ -29,11 +29,7 @@ document.getElementById('checkConfidence').addEventListener('click', async () =>
             const totalReviewsCount = sumArray(starCounts);
             if (totalReviewsCount === 0 || !starCounts || starCounts.length !== 5) {
                 resultContainer.innerHTML = `
-                    <p class="info-message"><strong>Place:</strong> ${placeName}</p>
-                    <p class="info-message"><strong>Category:</strong> ${category}</p>
-                    <p class="info-message"><strong>Total Reviews:</strong> ${reviewsCount.toLocaleString()}</p>
-                    <hr style="border: 0; height: 1px; background: #ddd; margin: 10px 0;">
-                    <p class="error-message">Not enough detailed review data (star distribution) found for confidence calculation.</p>
+                    <p class="error-message">Not enough detailed review data found for confidence calculation.</p>
                     <p style="font-size: 0.85rem; color: #4a5568;">(Navigate to a place with visible review statistics for full analysis)</p>
                 `;
                 return;
@@ -43,15 +39,12 @@ document.getElementById('checkConfidence').addEventListener('click', async () =>
             const { mu: meanStarRating, se: seStarRating } = getMeanAndSE(starCounts);
 
             // Calculate the 95% confidence interval for the mean star rating
-            // Using prob = 0.95, so 1 - (1 - 0.95) / 2 = 1 - 0.05 / 2 = 1 - 0.025 = 0.975
-            // The Z-score (k) for 97.5th percentile (for 95% CI) is approx 1.96
             const k_z_score = 1.96; // For 95% confidence level
 
             const confidenceIntervalStars = get_confidence_int(meanStarRating, seStarRating, k_z_score);
 
             // --- Mapping to 0-100% Confidence Level for Display ---
             // Scale the mean star rating from 1-5 to 0-100%
-            // 1 star = 0% confidence, 5 stars = 100% confidence
             const estimatedConfidencePercent = ((meanStarRating - 1) / 4) * 100;
 
             // Scale the confidence interval bounds from 1-5 stars to 0-100%
@@ -63,17 +56,11 @@ document.getElementById('checkConfidence').addEventListener('click', async () =>
             const displayUpperBound = Math.min(100, upperBoundPercent);
 
 
-            // Display results
+            // --- Display only Confidence Level and Interval ---
             resultContainer.innerHTML = `
-                <p class="info-message"><strong>Place:</strong> ${placeName}</p>
-                <p class="info-message"><strong>Category:</strong> ${category}</p>
-                <p class="info-message"><strong>Total Reviews:</strong> ${reviewsCount.toLocaleString()}</p>
-                <p class="info-message"><strong>Mean Star Rating:</strong> ${meanStarRating.toFixed(2)}</p>
-                <p class="info-message"><strong>95% CI for Mean Stars:</strong> [${confidenceIntervalStars[0].toFixed(2)} - ${confidenceIntervalStars[1].toFixed(2)}]</p>
-                <hr style="border: 0; height: 1px; background: #ddd; margin: 10px 0;">
                 <p style="font-size: 1.1rem;"><strong>Estimated Confidence:</strong> <span style="font-size: 1.3rem; font-weight: bold; color: ${getConfidenceColor(estimatedConfidencePercent)};">${estimatedConfidencePercent.toFixed(2)}%</span></p>
-                <p style="font-size: 0.95rem;"><strong>95% Confidence Interval (Scaled):</strong> [${displayLowerBound.toFixed(2)}% - ${displayUpperBound.toFixed(2)}%]</p>
-                <p style="font-size: 0.8rem; color: #666; margin-top: 5px;">(Confidence derived from mean star rating and its interval)</p>
+                <p style="font-size: 0.95rem;"><strong>95% Confidence Interval:</strong> [${displayLowerBound.toFixed(2)}% - ${displayUpperBound.toFixed(2)}%]</p>
+                <p style="font-size: 0.8rem; color: #666; margin-top: 5px;">(Derived from review distribution)</p>
             `;
 
         } else if (extractedData && !extractedData.placeName) {
@@ -184,8 +171,7 @@ function getMeanAndSE(rev_nums) {
     const mu = mean_stars(rev_nums);
     const standard_dev = standard_dev_stars(rev_nums, mu);
     const totalReviews = sumArray(rev_nums);
-    // Standard error is standard_dev / sqrt(n). Handle n=0 case.
-    const se = totalReviews > 0 ? standard_dev / Math.sqrt(totalReviews) : 0;
+    const se = totalReviews > 0 ? standard_dev / Math.sqrt(totalReviews) : 0; // Handle n=0 case gracefully
     return { mu, se };
 }
 
@@ -206,7 +192,7 @@ function get_confidence_int(mu, se, k) {
 
 /**
  * This function is injected as a content script into the Google Maps page.
- * It extracts the place name, total review count, category, and crucially,
+ * It attempts to extract the place name, total review count, category, and crucially,
  * the number of reviews for each star rating (5-star down to 1-star).
  * IMPORTANT: Google Maps' DOM structure changes frequently. These selectors
  * might need to be updated in the future to remain accurate.
@@ -220,23 +206,28 @@ function extractGoogleMapsReviewData() {
     let starCounts = []; // Array to store calculated counts for 5, 4, 3, 2, 1 stars
 
     // --- Attempt to extract Place Name ---
+    // Selector 1: Main H1 title
     const titleElement = document.querySelector('h1.fontHeadlineLarge');
     if (titleElement) {
         placeName = titleElement.textContent.trim();
     } else {
+        // Selector 2: Address line (often visible if H1 is not found for specific place)
         const addressElement = document.querySelector('div[data-tooltip="Copy address"]');
         if (addressElement) {
             placeName = addressElement.textContent.trim();
         } else {
+            // Selector 3: Extract from URL query parameter 'q' as a fallback
             const urlParams = new URLSearchParams(window.location.search);
             const query = urlParams.get('q');
             if (query) {
                 placeName = query.split(',')[0].trim();
             } else {
-                const prominentTextElements = document.querySelectorAll('h1, h2, div[aria-label][role="region"] > div > div > div > span:not([aria-label])');
+                // Selector 4: General prominent text elements that might be the name
+                const prominentTextElements = document.querySelectorAll('h1, h2, div[aria-label][role="region"] > div > div > div > span:not([aria-label]), div[role="main"] h1');
                 for (let i = 0; i < prominentTextElements.length; i++) {
                     const text = prominentTextElements[i].textContent.trim();
-                    if (text.length > 5 && prominentTextElements[i].offsetWidth > 0 && prominentTextElements[i].offsetHeight > 0 && !text.includes('reviews')) {
+                    // Basic heuristic to avoid generic text or review counts
+                    if (text.length > 5 && prominentTextElements[i].offsetWidth > 0 && prominentTextElements[i].offsetHeight > 0 && !text.includes('reviews') && !/\d+\.\d+/.test(text)) {
                         placeName = text;
                         break;
                     }
@@ -245,62 +236,76 @@ function extractGoogleMapsReviewData() {
         }
     }
 
-    // --- Attempt to extract Total Reviews Count and Mean Rating ---
-    // Total reviews count (e.g., "1,687 reviews")
-    // This selector targets a div with fontBodySmall that also contains a span with aria-label for star rating
-    const reviewsNumElement = document.querySelector('div.fontBodySmall:has(span[aria-label*="star rating"])');
-    if (reviewsNumElement) {
-        reviewsCount = text_to_num(reviewsNumElement.textContent);
+    // --- Attempt to extract Total Reviews Count ---
+    // Selector 1: Element containing total reviews count like "1,687 reviews"
+    // This targets a span within a specific structure often seen on review pages
+    const reviewsCountSpan = document.querySelector('span[aria-label*="star rating"] + span.fontBodySmall, button[data-item-id="reviews"] span.fontBodySmall, div[aria-label*="reviews"] > div.fontBodySmall');
+
+    if (reviewsCountSpan) {
+        reviewsCount = text_to_num(reviewsCountSpan.textContent);
     } else {
-        // Fallback for total reviews if the above selector doesn't work (e.g., reviews button)
-        const reviewsButton = document.querySelector('button[data-item-id="reviews"] span.fontBodySmall');
-        if (reviewsButton) {
+        // Fallback: search for any strong indicator of review count, sometimes on a button
+        const reviewsButton = document.querySelector('button[data-item-id="reviews"]');
+        if (reviewsButton && reviewsButton.textContent.includes('reviews')) {
             reviewsCount = text_to_num(reviewsButton.textContent);
         }
     }
-    // Default to 0 if not found
     if (reviewsCount === null) {
-        reviewsCount = 0;
+        reviewsCount = 0; // Default to 0 if no reviews count found
     }
 
-
     // --- Attempt to extract Star Percentages (from the progress bars) ---
-    // Based on your screenshot, the bars are div with class 'oxIpGd'
-    const starBarElements = document.querySelectorAll('div.oxIpGd');
+    // These are the elements like <div class="oxIpGd" style="width: 73%;">
+    // Often nested within a table-like structure of review breakdowns.
+    const starBarElements = document.querySelectorAll('div.BHXU6e div.OXlg7c div.oxIpGd'); // More specific path
+
+    // Fallback if the above doesn't work, try a more generic path
+    if (starBarElements.length < 5) {
+        starBarElements = document.querySelectorAll('div.oxIpGd'); // The original generic one
+    }
+
     if (starBarElements.length >= 5) { // Expecting 5 bars (5-star down to 1-star)
         for (let i = 0; i < 5; i++) {
             const style = starBarElements[i].getAttribute('style');
             starPercentages.push(percents_to_real_percents(style));
         }
+    } else {
+        // Log a warning if star bars aren't found as expected
+        console.warn("Could not find 5 star percentage bars. Found:", starBarElements.length);
+        starPercentages = [0, 0, 0, 0, 0]; // Default to 0 if not found
     }
 
-    // --- Calculate estimated count for each star (revs in your Python code) ---
+    // --- Calculate estimated count for each star ---
     if (reviewsCount > 0 && starPercentages.length === 5) {
         const totalPercentageSum = sumArray(starPercentages);
-        if (totalPercentageSum > 0) { // Avoid division by zero
+        if (totalPercentageSum > 0) {
             for (let i = 0; i < 5; i++) {
-                starCounts.push(Math.round(reviewsCount * (starPercentages[i] / totalPercentageSum)));
+                // Adjust to ensure percentages add up to 100 before distribution
+                const normalizedPercentage = starPercentages[i] / totalPercentageSum;
+                starCounts.push(Math.round(reviewsCount * normalizedPercentage));
             }
         } else {
-            starCounts = [0, 0, 0, 0, 0]; // All percentages are zero, so all counts are zero
+            starCounts = [0, 0, 0, 0, 0];
         }
     } else {
-        starCounts = [0, 0, 0, 0, 0]; // Default to zero counts if data is missing
+        starCounts = [0, 0, 0, 0, 0];
     }
 
 
     // --- Attempt to extract Category ---
+    // Selector 1: Common class for category text
     const categoryElements = document.querySelectorAll(
-        'span.DkEaL:not([role="img"]), ' + // Common class for category text
-        'button[jsaction*="category"] > span.fontBodySmall, ' + // Category link button
-        'div.section-info-text, ' + // General info text block
-        'span[aria-label*="Category"]' // Accessibility label for category
+        'span.DkEaL:not([role="img"]), ' +
+        'button[jsaction*="category"] > span.fontBodySmall, ' +
+        'div.section-info-text, ' +
+        'span[aria-label*="Category"], ' +
+        'button[jsaction*="action.category"] > span:last-child' // Another common pattern for category button
     );
 
     for (const el of categoryElements) {
         const text = el.textContent.trim();
-        // Heuristic: category text is usually relatively short and descriptive and not a number
-        if (text.length > 0 && text.length < 50 && isNaN(parseInt(text.replace(/,/g, ''), 10)) && !text.includes('reviews') && !text.includes('directions')) {
+        // Heuristic: category text is usually relatively short and descriptive and not a number or review-related
+        if (text.length > 0 && text.length < 50 && isNaN(parseInt(text.replace(/,/g, ''), 10)) && !text.includes('reviews') && !text.includes('directions') && !text.includes('rating')) {
             category = text;
             break;
         }
