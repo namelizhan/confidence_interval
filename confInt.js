@@ -103,13 +103,15 @@ function text_to_num(text) {
 }
 
 /**
- * Helper to parse 'width: X%;' from style attribute to a float percentage.
+ * Helper to parse 'padding-left: X%;' from style attribute to a float percentage.
+ * Corrected to look for 'padding-left'
  * @param {string} styleText - The style attribute string.
- * @returns {number} - The percentage as a float (e.g., 73 for "width: 73%;").
+ * @returns {number} - The percentage as a float (e.g., 73 for "padding-left: 73%;").
  */
 function percents_to_real_percents(styleText) {
     if (!styleText) return 0;
-    const match = styleText.match(/width:\s*([\d.]+)%/);
+    // Updated regex to look for padding-left
+    const match = styleText.match(/padding-left:\s*([\d.]+)%/);
     if (match && match[1]) {
         return parseFloat(match[1]);
     }
@@ -237,27 +239,29 @@ function extractGoogleMapsReviewData() {
     }
 
     // --- Attempt to extract Total Reviews Count ---
-    // Selector 1: Element containing total reviews count like "1,687 reviews"
-    // This targets a span within a specific structure often seen on review pages
-    const reviewsCountSpan = document.querySelector('span[aria-label*="star rating"] + span.fontBodySmall, button[data-item-id="reviews"] span.fontBodySmall, div[aria-label*="reviews"] > div.fontBodySmall');
+    // User provided: <div class="fontBodySmall" ...>245 reviews</div>
+    const reviewsCountElement = document.querySelector('div.fontBodySmall[jslog*="reviews"]'); // More specific selector based on jslog
+    if (!reviewsCountElement) {
+      reviewsCountElement = document.querySelector('div.fontBodySmall:has(span[aria-label*="star rating"])'); // Fallback from previous
+    }
+    if (!reviewsCountElement) {
+      reviewsCountElement = document.querySelector('button[data-item-id="reviews"] span.fontBodySmall'); // Fallback to reviews button
+    }
 
-    if (reviewsCountSpan) {
-        reviewsCount = text_to_num(reviewsCountSpan.textContent);
+
+    if (reviewsCountElement) {
+        reviewsCount = text_to_num(reviewsCountElement.textContent);
     } else {
-        // Fallback: search for any strong indicator of review count, sometimes on a button
-        const reviewsButton = document.querySelector('button[data-item-id="reviews"]');
-        if (reviewsButton && reviewsButton.textContent.includes('reviews')) {
-            reviewsCount = text_to_num(reviewsButton.textContent);
-        }
-    }
-    if (reviewsCount === null) {
         reviewsCount = 0; // Default to 0 if no reviews count found
+        console.warn("Could not find total reviews count with current selectors.");
     }
+
 
     // --- Attempt to extract Star Percentages (from the progress bars) ---
-    // These are the elements like <div class="oxIpGd" style="width: 73%;">
+    // User provided: <div class="oxIpGd" style="padding-left: 4.87805%;"></div>
+    // These are the elements like <div class="oxIpGd" style="padding-left: X%;">
     // Often nested within a table-like structure of review breakdowns.
-    const starBarElements = document.querySelectorAll('div.BHXU6e div.OXlg7c div.oxIpGd'); // More specific path
+    const starBarElements = document.querySelectorAll('div.BHXU6e div.OXlg7c div.oxIpGd'); // Specific path found in previous inspections
 
     // Fallback if the above doesn't work, try a more generic path
     if (starBarElements.length < 5) {
@@ -267,10 +271,9 @@ function extractGoogleMapsReviewData() {
     if (starBarElements.length >= 5) { // Expecting 5 bars (5-star down to 1-star)
         for (let i = 0; i < 5; i++) {
             const style = starBarElements[i].getAttribute('style');
-            starPercentages.push(percents_to_real_percents(style));
+            starPercentages.push(percents_to_real_percents(style)); // This now parses 'padding-left'
         }
     } else {
-        // Log a warning if star bars aren't found as expected
         console.warn("Could not find 5 star percentage bars. Found:", starBarElements.length);
         starPercentages = [0, 0, 0, 0, 0]; // Default to 0 if not found
     }
@@ -278,33 +281,32 @@ function extractGoogleMapsReviewData() {
     // --- Calculate estimated count for each star ---
     if (reviewsCount > 0 && starPercentages.length === 5) {
         const totalPercentageSum = sumArray(starPercentages);
-        if (totalPercentageSum > 0) {
+        // If all percentages are 0, or sum is 0, then all counts are 0
+        if (totalPercentageSum === 0) {
+             starCounts = [0, 0, 0, 0, 0];
+        } else {
             for (let i = 0; i < 5; i++) {
-                // Adjust to ensure percentages add up to 100 before distribution
+                // Ensure normalized percentage calculation is correct even if sum is not exactly 100
                 const normalizedPercentage = starPercentages[i] / totalPercentageSum;
                 starCounts.push(Math.round(reviewsCount * normalizedPercentage));
             }
-        } else {
-            starCounts = [0, 0, 0, 0, 0];
         }
     } else {
-        starCounts = [0, 0, 0, 0, 0];
+        starCounts = [0, 0, 0, 0, 0]; // Default to zero counts if total reviews or percentages are missing
     }
 
 
     // --- Attempt to extract Category ---
-    // Selector 1: Common class for category text
     const categoryElements = document.querySelectorAll(
-        'span.DkEaL:not([role="img"]), ' +
-        'button[jsaction*="category"] > span.fontBodySmall, ' +
-        'div.section-info-text, ' +
-        'span[aria-label*="Category"], ' +
+        'span.DkEaL:not([role="img"]), ' + // Common class for category text
+        'button[jsaction*="category"] > span.fontBodySmall, ' + // Category link button
+        'div.section-info-text, ' + // General info text block
+        'span[aria-label*="Category"], ' + // Accessibility label for category
         'button[jsaction*="action.category"] > span:last-child' // Another common pattern for category button
     );
 
     for (const el of categoryElements) {
         const text = el.textContent.trim();
-        // Heuristic: category text is usually relatively short and descriptive and not a number or review-related
         if (text.length > 0 && text.length < 50 && isNaN(parseInt(text.replace(/,/g, ''), 10)) && !text.includes('reviews') && !text.includes('directions') && !text.includes('rating')) {
             category = text;
             break;
@@ -315,6 +317,6 @@ function extractGoogleMapsReviewData() {
         placeName: placeName,
         reviewsCount: reviewsCount,
         category: category,
-        starCounts: starCounts // e.g., [5-star count, 4-star count, ..., 1-star count]
+        starCounts: starCounts
     };
 }
